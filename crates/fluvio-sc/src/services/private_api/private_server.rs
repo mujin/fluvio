@@ -45,7 +45,17 @@ use crate::stores::spu::SpuLocalStorePolicy;
 use crate::stores::spu::SpuSpec;
 use crate::stores::actions::WSAction;
 
-const HEALTH_DURATION: u64 = 90;
+/// Default health check timeout in seconds. SC terminates an SPU connection
+/// if no message is received within this duration. Override at runtime with
+/// the FLUVIO_SC_HEALTH_TIMEOUT_SECS environment variable.
+const DEFAULT_HEALTH_DURATION: u64 = 90;
+
+fn health_duration() -> u64 {
+    std::env::var("FLUVIO_SC_HEALTH_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(DEFAULT_HEALTH_DURATION)
+}
 
 #[derive(Debug)]
 pub struct ScInternalService<C> {
@@ -138,7 +148,9 @@ where
 
     // send initial changes
 
-    let mut health_check_timer = sleep(Duration::from_secs(HEALTH_DURATION));
+    let health_timeout = health_duration();
+    info!(health_timeout, "SC health check timeout (seconds)");
+    let mut health_check_timer = sleep(Duration::from_secs(health_timeout));
 
     loop {
         use tokio::select;
@@ -183,7 +195,7 @@ where
                             }
                         }
                         // reset timer
-                        health_check_timer = sleep(Duration::from_secs(HEALTH_DURATION));
+                        health_check_timer = sleep(Duration::from_secs(health_timeout));
                         trace!("health check reset");
                     } else {
                         debug!(spu_id,"no message content, ending processing loop");
