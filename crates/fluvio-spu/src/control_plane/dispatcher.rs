@@ -127,13 +127,20 @@ impl ScDispatcher<FileReplica> {
         use async_io::Timer;
 
         /// Interval between each send to SC
-        /// SC status are not source of truth, it is delayed derived data.  
+        /// SC status are not source of truth, it is delayed derived data.
         const MIN_SC_SINK_TIME: Duration = Duration::from_millis(400);
+
+        /// If no message is received from SC within this duration, assume the
+        /// connection is dead and break out so dispatch_loop can reconnect.
+        /// Must be longer than SC's HEALTH_DURATION (default 90s) to allow
+        /// SC time to send spec changes after receiving our pings.
+        const SC_INACTIVITY_TIMEOUT: Duration = Duration::from_secs(120);
 
         let (mut sink, mut stream) = socket.split();
         let mut api_stream = stream.api_stream::<InternalSpuRequest, InternalSpuApi>();
 
         let mut status_timer = Timer::interval(MIN_SC_SINK_TIME);
+        let mut sc_activity_deadline = sleep(SC_INACTIVITY_TIMEOUT);
 
         loop {
             trace!("waiting");
@@ -147,6 +154,9 @@ impl ScDispatcher<FileReplica> {
                 },
 
                 sc_request = api_stream.next() => {
+                    // Reset inactivity timer on any message from SC
+                    sc_activity_deadline = sleep(SC_INACTIVITY_TIMEOUT);
+
                     debug!("got request from sc");
                     match sc_request {
                         Some(Ok(InternalSpuRequest::UpdateReplicaRequest(request))) => {
@@ -183,6 +193,14 @@ impl ScDispatcher<FileReplica> {
                             break;
                         }
                     }
+                },
+
+                _ = &mut sc_activity_deadline => {
+                    warn!(
+                        timeout_secs = SC_INACTIVITY_TIMEOUT.as_secs(),
+                        "no message from SC within timeout, assuming dead connection"
+                    );
+                    break;
                 }
 
             }
